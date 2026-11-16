@@ -372,7 +372,10 @@ export class EntryStorage {
     }
   }
 
-  static async backupGetExport(encryption: Encryption, encrypted?: boolean) {
+  static async backupGetExport(
+    encryption: EncryptionInterface,
+    encrypted?: boolean
+  ) {
     const _data = await BrowserStorage.get();
     for (const hash of Object.keys(_data)) {
       if (

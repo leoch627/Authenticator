@@ -11,6 +11,7 @@ interface UserSettingsData {
   driveRevoked?: boolean;
   driveToken?: string;
   dropboxEncrypted?: boolean;
+  dropboxRefreshToken?: string;
   dropboxRevoked?: boolean;
   dropboxToken?: string;
   lastRemindingBackupTime?: number;
@@ -41,6 +42,7 @@ const LocalUserSettingsDataKeys = [
   "driveRevoked",
   "driveToken",
   "dropboxEncrypted",
+  "dropboxRefreshToken",
   "dropboxRevoked",
   "dropboxToken",
   "lastRemindingBackupTime",

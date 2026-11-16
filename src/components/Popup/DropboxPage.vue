@@ -31,7 +31,7 @@
 </template>
 <script lang="ts">
 import Vue from "vue";
-import { Dropbox } from "../../models/backup";
+import { Dropbox, getBackupEncryption } from "../../models/backup";
 import { UserSettings } from "../../models/settings";
 
 const service = "dropbox";
@@ -62,11 +62,21 @@ export default Vue.extend({
       set(newValue: string) {
         UserSettings.items.dropboxEncrypted = newValue === "true";
         UserSettings.commitItems();
-        this.$store.commit("backup/setEnc", { service, value: newValue });
+        this.$store.commit("backup/setEnc", {
+          service,
+          value: newValue === "true",
+        });
       },
     },
     backupToken: function () {
       return this.$store.state.backup.dropboxToken;
+    },
+  },
+  watch: {
+    backupToken: async function (signedIn: boolean) {
+      if (signedIn) {
+        this.email = await this.getUser();
+      }
     },
   },
   methods: {
@@ -74,28 +84,34 @@ export default Vue.extend({
       chrome.runtime.sendMessage({ action: service });
     },
     async backupLogout() {
-      await new Promise((resolve: (value: boolean) => void) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "https://api.dropboxapi.com/2/auth/token/revoke");
-        xhr.setRequestHeader(
-          "Authorization",
-          "Bearer " + UserSettings.items.dropboxToken
-        );
-        xhr.onreadystatechange = () => {
-          if (xhr.readyState === 4) {
-            resolve(true);
-            return;
-          }
-        };
-        xhr.send();
-      });
-      UserSettings.removeItem(`${service}Token`);
+      await UserSettings.updateItems();
+      const token = UserSettings.items.dropboxToken;
+      if (token) {
+        try {
+          await fetch("https://api.dropboxapi.com/2/auth/token/revoke", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + token },
+          });
+        } catch (error) {
+          console.error(error);
+        }
+      }
+      UserSettings.items.dropboxToken = undefined;
+      UserSettings.items.dropboxRefreshToken = undefined;
+      await UserSettings.commitItems();
       this.$store.commit("backup/setToken", { service, value: false });
       this.$store.commit("style/hideInfo");
     },
     async backupUpload() {
-      const dbox = new Dropbox();
-      const response = await dbox.upload(this.$store.state.accounts.encryption);
+      let response = false;
+      try {
+        response = await new Dropbox().upload(
+          getBackupEncryption(this.$store.state.accounts)
+        );
+      } catch (error) {
+        console.error(error);
+      }
+      await UserSettings.updateItems();
       if (response === true) {
         this.$store.commit("notification/alert", this.i18n.updateSuccess);
       } else if (UserSettings.items.dropboxRevoked === true) {
@@ -103,7 +119,7 @@ export default Vue.extend({
           "notification/alert",
           chrome.i18n.getMessage("token_revoked", ["Dropbox"])
         );
-        UserSettings.removeItem("dropboxToken");
+        UserSettings.removeItem("dropboxRevoked");
         this.$store.commit("backup/setToken", { service, value: false });
       } else {
         this.$store.commit("notification/alert", this.i18n.updateFailure);

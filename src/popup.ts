@@ -17,7 +17,7 @@ import { Menu } from "./store/Menu";
 import { Notification } from "./store/Notification";
 import { Qr } from "./store/Qr";
 import { Advisor } from "./store/Advisor";
-import { Dropbox, Drive, OneDrive } from "./models/backup";
+import { Dropbox, Drive, OneDrive, getBackupEncryption } from "./models/backup";
 import { syncTimeWithGoogle } from "./syncTime";
 import { StorageLocation, UserSettings } from "./models/settings";
 
@@ -72,6 +72,19 @@ async function init() {
       }, 1000);
     },
   }).$mount("#authenticator");
+
+  // The background script signs in to backup services; reload the settings it
+  // changed so that they are shown and aren't overwritten with stale values.
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.action === "backupToken") {
+      UserSettings.updateItems().then(() => {
+        instance.$store.commit("backup/setToken", {
+          service: message.service,
+          value: true,
+        });
+      });
+    }
+  });
 
   // Prompt for password if needed
   if (instance.$store.state.accounts.shouldShowPassphrase) {
@@ -209,9 +222,7 @@ async function runScheduledBackup(clientTime: number, instance: Vue) {
           try {
             const dropbox = new Dropbox();
             const res = await dropbox.upload(
-              instance.$store.state.accounts.encryption.get(
-                instance.$store.state.accounts.defaultEncryption
-              )
+              getBackupEncryption(instance.$store.state.accounts)
             );
             if (res) {
               // we have uploaded backup to Dropbox
@@ -253,9 +264,7 @@ async function runScheduledBackup(clientTime: number, instance: Vue) {
           try {
             const drive = new Drive();
             const res = await drive.upload(
-              instance.$store.state.accounts.encryption.get(
-                instance.$store.state.accounts.defaultEncryption
-              )
+              getBackupEncryption(instance.$store.state.accounts)
             );
             if (res) {
               UserSettings.items.lastRemindingBackupTime = clientTime;
@@ -295,9 +304,7 @@ async function runScheduledBackup(clientTime: number, instance: Vue) {
           try {
             const onedrive = new OneDrive();
             const res = await onedrive.upload(
-              instance.$store.state.accounts.encryption.get(
-                instance.$store.state.accounts.defaultEncryption
-              )
+              getBackupEncryption(instance.$store.state.accounts)
             );
             if (res) {
               UserSettings.items.lastRemindingBackupTime = clientTime;

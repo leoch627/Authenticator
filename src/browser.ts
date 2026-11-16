@@ -7,3 +7,7 @@ export const isSafari =
 export const isChrome =
   navigator.userAgent.indexOf("Chrome") !== -1 &&
   navigator.userAgent.indexOf("Edg") === -1;
+// chrome.identity.getAuthToken only works in Google Chrome itself; other
+// Chromium browsers have to go through launchWebAuthFlow.
+export const hasChromeIdentity =
+  isChrome && navigator.userAgent.indexOf("OPR") === -1;

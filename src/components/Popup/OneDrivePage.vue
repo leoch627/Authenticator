@@ -41,7 +41,7 @@
 </template>
 <script lang="ts">
 import Vue from "vue";
-import { OneDrive } from "../../models/backup";
+import { OneDrive, getBackupEncryption } from "../../models/backup";
 import { UserSettings } from "../../models/settings";
 
 const service = "onedrive";
@@ -67,16 +67,26 @@ export default Vue.extend({
           UserSettings.commitItems();
           return true;
         }
-        return this.$store.state.backup.driveEncrypted;
+        return this.$store.state.backup.oneDriveEncrypted;
       },
       set(newValue: string) {
-        UserSettings.items.driveEncrypted = newValue === "true";
+        UserSettings.items.oneDriveEncrypted = newValue === "true";
         UserSettings.commitItems();
-        this.$store.commit("backup/setEnc", { service, value: newValue });
+        this.$store.commit("backup/setEnc", {
+          service,
+          value: newValue === "true",
+        });
       },
     },
     backupToken: function () {
       return this.$store.state.backup.oneDriveToken;
+    },
+  },
+  watch: {
+    backupToken: async function (signedIn: boolean) {
+      if (signedIn) {
+        this.email = await this.getUser();
+      }
     },
   },
   methods: {
@@ -84,23 +94,30 @@ export default Vue.extend({
       window.open(url, "_blank");
       return;
     },
-    getBackupToken(business?: boolean) {
+    async getBackupToken(business?: boolean) {
+      // The background script reads this to pick the scope, so it has to be
+      // stored before asking it to sign in.
       UserSettings.items.oneDriveBusiness = Boolean(business);
-      UserSettings.commitItems();
+      await UserSettings.commitItems();
       chrome.runtime.sendMessage({ action: service });
     },
     async backupLogout() {
       UserSettings.items.oneDriveToken = undefined;
       UserSettings.items.oneDriveRefreshToken = undefined;
-      UserSettings.commitItems();
+      await UserSettings.commitItems();
       this.$store.commit("backup/setToken", { service, value: false });
       this.$store.commit("style/hideInfo");
     },
     async backupUpload() {
-      const oneDrive = new OneDrive();
-      const response = await oneDrive.upload(
-        this.$store.state.accounts.encryption
-      );
+      let response = false;
+      try {
+        response = await new OneDrive().upload(
+          getBackupEncryption(this.$store.state.accounts)
+        );
+      } catch (error) {
+        console.error(error);
+      }
+      await UserSettings.updateItems();
       if (response === true) {
         this.$store.commit("notification/alert", this.i18n.updateSuccess);
       } else if (UserSettings.items.oneDriveRevoked === true) {
