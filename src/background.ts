@@ -17,6 +17,8 @@ import {
   getMatchedEntries,
   getCurrentTab,
   okToInjectContentScript,
+  armScan,
+  ScanState,
 } from "./utils";
 import { CodeState } from "./models/otp";
 
@@ -24,26 +26,82 @@ import { getOTPAuthPerLineFromOPTAuthMigration } from "./models/migration";
 import { hasChromeIdentity, isChrome, isEdge, isFirefox } from "./browser";
 import { UserSettings } from "./models/settings";
 
-let contentTab: chrome.tabs.Tab | undefined;
+// Popup, options and import pages, as opposed to content scripts, which run
+// inside web pages and report the URL of that page
+function isExtensionPage(sender: chrome.runtime.MessageSender) {
+  return !!sender.url && sender.url.startsWith(chrome.runtime.getURL(""));
+}
+
+let scanLock: Promise<unknown> = Promise.resolve();
+
+// Moves the scan running on a tab from one step to the next, or ends it when
+// there is no next step. Resolves to false, changing nothing, unless that tab
+// is at the expected step. One call at a time, so a step is never taken twice.
+function advanceScan(
+  tabId: number,
+  from: ScanState["state"],
+  to?: ScanState["state"]
+) {
+  const advanced = scanLock.then(async () => {
+    const { scan } = (await chrome.storage.session.get("scan")) as {
+      scan?: ScanState | null;
+    };
+    if (!scan || scan.tabId !== tabId || scan.state !== from) {
+      return false;
+    }
+    await chrome.storage.session.set({
+      scan: to ? { tabId, state: to } : null,
+    });
+    return true;
+  });
+  scanLock = advanced.catch(() => undefined);
+  return advanced;
+}
 
 chrome.runtime.onMessage.addListener(async (message, sender) => {
-  await UserSettings.updateItems();
-
   if (message.action === "getCapture") {
-    if (!sender.tab) {
+    const tab = sender.tab;
+    if (!tab || tab.id === undefined || sender.frameId !== 0) {
       return;
     }
-    const url = await getCapture(sender.tab);
-    if (contentTab && contentTab.id) {
-      message.info.url = url;
-      chrome.tabs.sendMessage(contentTab.id, {
-        action: "sendCaptureUrl",
-        info: message.info,
-      });
+    if (!(await advanceScan(tab.id, "armed", "captured"))) {
+      return;
     }
+
+    await UserSettings.updateItems();
+    const url = await getCapture(tab).catch((error) => {
+      console.error(error);
+      return undefined;
+    });
+    if (url) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: "sendCaptureUrl",
+        info: { ...message.info, url },
+      });
+    } else {
+      await advanceScan(tab.id, "captured");
+    }
+    return;
   } else if (message.action === "getTotp") {
-    getTotp(message.info);
-  } else if (message.action === "cachePassphrase") {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined || sender.frameId !== 0) {
+      return;
+    }
+    if (!(await advanceScan(tabId, "captured"))) {
+      return;
+    }
+
+    await UserSettings.updateItems();
+    getTotp(message.info, tabId);
+    return;
+  } else if (!isExtensionPage(sender)) {
+    // Everything below is for the extension's own pages only
+    return;
+  }
+
+  await UserSettings.updateItems();
+
+  if (message.action === "cachePassphrase") {
     chrome.storage.session.set({
       cachedPassphrase: message.value,
       cachedKeyId: message.keyId,
@@ -57,8 +115,6 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
   } else if (message.action === "resetAutolock") {
     chrome.alarms.clear("autolock");
     setAutolock();
-  } else if (message.action === "updateContentTab") {
-    contentTab = message.data;
   } else if (message.action === "updateContextMenu") {
     updateContextMenu();
   }
@@ -69,16 +125,32 @@ chrome.runtime.onMessage.addListener(async (message, sender) => {
 
 chrome.alarms.onAlarm.addListener(() => {
   chrome.storage.session.set({ cachedPassphrase: null, cachedKeyId: null });
-  if (contentTab && contentTab.id) {
-    chrome.tabs.sendMessage(contentTab.id, { action: "stopCapture" });
-  }
+  chrome.storage.session.get("scan").then(({ scan }) => {
+    if (scan) {
+      chrome.storage.session.set({ scan: null });
+      chrome.tabs
+        .sendMessage(scan.tabId, { action: "stopCapture" })
+        .catch(() => undefined);
+    }
+  });
   chrome.runtime.sendMessage({ action: "stopImport" });
 
   // https://stackoverflow.com/a/56483156
   return true;
 });
 
-async function getCapture(tab: chrome.tabs.Tab) {
+async function getCapture(senderTab: chrome.tabs.Tab) {
+  if (senderTab.id === undefined) {
+    return;
+  }
+
+  // The screenshot is of whatever tab is showing in the window. Make sure
+  // that is still the tab that asked for it.
+  const tab = await chrome.tabs.get(senderTab.id);
+  if (!tab.active) {
+    return;
+  }
+
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
     format: "png",
   });
@@ -86,11 +158,11 @@ async function getCapture(tab: chrome.tabs.Tab) {
   return dataUrl;
 }
 
-async function getTotp(text: string, silent = false) {
-  if (!contentTab || !contentTab.id || !text) {
+// id is the tab that scanned the code, which is told how it went
+async function getTotp(text: string, id: number, silent = false) {
+  if (!text) {
     return false;
   }
-  const id = contentTab.id;
 
   if (text.indexOf("otpauth://") !== 0) {
     if (text.indexOf("otpauth-migration://") === 0) {
@@ -102,7 +174,7 @@ async function getTotp(text: string, silent = false) {
 
       const getTotpPromises: Array<Promise<boolean>> = [];
       for (const otpUrl of otpUrls) {
-        getTotpPromises.push(getTotp(otpUrl, true));
+        getTotpPromises.push(getTotp(otpUrl, id, true));
       }
 
       const getTotpResults = await Promise.allSettled(getTotpPromises);
@@ -530,7 +602,7 @@ chrome.commands.onCommand.addListener(async (command: string) => {
           files: ["/css/content.css"],
         });
 
-        contentTab = tab;
+        await armScan(tab);
         chrome.tabs.sendMessage(tab.id, { action: "capture" });
       }
       break;
@@ -546,8 +618,6 @@ chrome.commands.onCommand.addListener(async (command: string) => {
           target: { tabId: tab.id },
           files: ["/css/content.css"],
         });
-
-        contentTab = tab;
 
         const siteName = await getSiteName();
         const entries = await EntryStorage.get();

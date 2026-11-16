@@ -5,122 +5,162 @@ import jsQR from "jsqr";
 // @ts-expect-error - injected by vue-svg-loader
 import scanGIF from "../images/scan.gif";
 
-if (!document.getElementById("__ga_grayLayout__")) {
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    switch (message.action) {
-      case "capture":
-        sendResponse("beginCapture");
-        showGrayLayout();
-        break;
-      case "sendCaptureUrl":
-        qrDecode(
-          message.info.url,
-          message.info.captureBoxLeft,
-          message.info.captureBoxTop,
-          message.info.captureBoxWidth,
-          message.info.captureBoxHeight
-        );
-        break;
-      case "errorsecret":
-        alert(chrome.i18n.getMessage("errorsecret") + message.secret);
-        break;
-      case "errorenc":
-        alert(chrome.i18n.getMessage("phrase_incorrect"));
-        break;
-      case "added":
-        alert(message.account + chrome.i18n.getMessage("added"));
-        break;
-      case "text":
-        alert(message.text);
-        break;
-      case "migrationfail":
-        alert(chrome.i18n.getMessage("migration_fail"));
-        break;
-      case "migrationpartlyfail":
-        alert(chrome.i18n.getMessage("migration_partly_fail"));
-        break;
-      case "migrationsuccess":
-        alert(chrome.i18n.getMessage("updateSuccess"));
-        break;
-      case "pastecode":
-        pasteCode(message.code);
-        break;
-      case "stopCapture": {
-        const captureBox = document.getElementById("__ga_captureBox__");
-        if (captureBox) {
-          captureBox.style.display = "none";
-        }
+// The host page shares the DOM with this script, but not its variables.
+// Everything a scan relies on is kept here, out of the page's reach; the
+// overlay elements are the only part of it the page can see or touch.
+let grayLayout: HTMLDivElement | undefined;
+let captureBox: HTMLDivElement | undefined;
+let scan: HTMLDivElement | undefined;
+// True only between a scan request from the extension and its end
+let scanning = false;
+let captureBoxPositionLeft = 0;
+let captureBoxPositionTop = 0;
 
-        const grayLayout = document.getElementById("__ga_grayLayout__");
-        if (grayLayout) {
-          grayLayout.style.display = "none";
-        }
-        break;
-      }
-      default:
-        // invalid command, ignore it
-        break;
-    }
+// This script is injected again every time it is needed. Tear down the
+// previous instance so that only one of them handles messages and owns the
+// overlay.
+const contentGlobal = globalThis as typeof globalThis & {
+  __gaDisposeContentScript?: () => void;
+};
+contentGlobal.__gaDisposeContentScript?.();
+contentGlobal.__gaDisposeContentScript = () => {
+  scanning = false;
+  grayLayout?.remove();
+  window.removeEventListener("keydown", onKeyDown, true);
+  try {
+    chrome.runtime.onMessage.removeListener(onMessage);
+  } catch (error) {
+    // The extension was reloaded, the listener is already gone
+  }
+};
 
-    // https://stackoverflow.com/a/56483156
-    return true;
-  });
+chrome.runtime.onMessage.addListener(onMessage);
+window.addEventListener("keydown", onKeyDown, true);
+
+function onMessage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  message: any,
+  sender: chrome.runtime.MessageSender,
+  sendResponse: (response?: unknown) => void
+) {
+  switch (message.action) {
+    case "capture":
+      sendResponse("beginCapture");
+      showGrayLayout();
+      break;
+    case "sendCaptureUrl":
+      qrDecode(
+        message.info.url,
+        message.info.captureBoxLeft,
+        message.info.captureBoxTop,
+        message.info.captureBoxWidth,
+        message.info.captureBoxHeight
+      );
+      break;
+    case "errorsecret":
+      alert(chrome.i18n.getMessage("errorsecret") + message.secret);
+      break;
+    case "errorenc":
+      alert(chrome.i18n.getMessage("phrase_incorrect"));
+      break;
+    case "added":
+      alert(message.account + chrome.i18n.getMessage("added"));
+      break;
+    case "text":
+      alert(message.text);
+      break;
+    case "migrationfail":
+      alert(chrome.i18n.getMessage("migration_fail"));
+      break;
+    case "migrationpartlyfail":
+      alert(chrome.i18n.getMessage("migration_partly_fail"));
+      break;
+    case "migrationsuccess":
+      alert(chrome.i18n.getMessage("updateSuccess"));
+      break;
+    case "pastecode":
+      pasteCode(message.code);
+      break;
+    case "stopCapture":
+      hideGrayLayout();
+      break;
+    default:
+      // invalid command, ignore it
+      break;
+  }
+
+  // https://stackoverflow.com/a/56483156
+  return true;
 }
 
-sessionStorage.setItem("captureBoxPositionLeft", "0");
-sessionStorage.setItem("captureBoxPositionTop", "0");
-
 function showGrayLayout() {
-  let grayLayout = document.getElementById("__ga_grayLayout__");
-  let qrCanvas = document.getElementById("__ga_qrCanvas__");
   if (!grayLayout) {
-    qrCanvas = document.createElement("canvas");
-    qrCanvas.id = "__ga_qrCanvas__";
-    qrCanvas.style.display = "none";
-    document.body.appendChild(qrCanvas);
+    // An instance we could not tear down may have left its overlay behind
+    document.getElementById("__ga_grayLayout__")?.remove();
+
     grayLayout = document.createElement("div");
     grayLayout.id = "__ga_grayLayout__";
     document.body.appendChild(grayLayout);
-    const scan = document.createElement("div");
+    scan = document.createElement("div");
     scan.className = "scan";
     scan.id = "__ga_scan__";
-    scan.style.background = `url('${scanGIF}') no-repeat center`;
     grayLayout.appendChild(scan);
-    const captureBox = document.createElement("div");
+    captureBox = document.createElement("div");
     captureBox.id = "__ga_captureBox__";
     grayLayout.appendChild(captureBox);
-    grayLayout.onmousedown = grayLayoutDown;
-    grayLayout.onmousemove = grayLayoutMove;
-    grayLayout.onmouseup = (event) => {
-      grayLayoutUp(event);
-    };
-    grayLayout.oncontextmenu = (event) => {
+    grayLayout.addEventListener("mousedown", grayLayoutDown);
+    grayLayout.addEventListener("mousemove", grayLayoutMove);
+    grayLayout.addEventListener("mouseup", grayLayoutUp);
+    grayLayout.addEventListener("contextmenu", (event) => {
       event.preventDefault();
-      return;
-    };
+    });
   }
+  if (scan) {
+    scan.style.background = `url('${scanGIF}') no-repeat center`;
+  }
+  captureBoxPositionLeft = 0;
+  captureBoxPositionTop = 0;
   grayLayout.style.display = "block";
+  scanning = true;
+}
+
+function hideGrayLayout() {
+  scanning = false;
+  if (captureBox) {
+    captureBox.style.display = "none";
+  }
+  if (grayLayout) {
+    grayLayout.style.display = "none";
+  }
+}
+
+// The page can show the overlay or dispatch events on it by itself. Only
+// follow the mouse while a scan started by the extension is running, and
+// only when the event comes from the user.
+function isScanEvent(event: Event) {
+  return scanning && event.isTrusted;
 }
 
 function grayLayoutDown(event: MouseEvent) {
+  if (!isScanEvent(event)) {
+    return;
+  }
   if (event.button === 1 || event.button === 2) {
     event.preventDefault();
     return;
   }
-  const captureBox = document.getElementById("__ga_captureBox__");
   if (!captureBox) {
     return;
   }
 
-  sessionStorage.setItem("captureBoxPositionLeft", event.clientX.toString());
-  sessionStorage.setItem("captureBoxPositionTop", event.clientY.toString());
+  captureBoxPositionLeft = event.clientX;
+  captureBoxPositionTop = event.clientY;
   captureBox.style.left = event.clientX + "px";
   captureBox.style.top = event.clientY + "px";
   captureBox.style.width = "1px";
   captureBox.style.height = "1px";
   captureBox.style.display = "block";
 
-  const scan = document.getElementById("__ga_scan__");
   if (scan) {
     scan.style.background = "transparent";
   }
@@ -128,31 +168,21 @@ function grayLayoutDown(event: MouseEvent) {
 }
 
 function grayLayoutMove(event: MouseEvent) {
+  if (!isScanEvent(event)) {
+    return;
+  }
   if (event.button === 1 || event.button === 2) {
     event.preventDefault();
     return;
   }
-  const captureBox = document.getElementById("__ga_captureBox__");
   if (!captureBox) {
     return;
   }
 
-  const captureBoxLeft = Math.min(
-    Number(sessionStorage.getItem("captureBoxPositionLeft")),
-    event.clientX
-  );
-  const captureBoxTop = Math.min(
-    Number(sessionStorage.getItem("captureBoxPositionTop")),
-    event.clientY
-  );
-  const captureBoxWidth =
-    Math.abs(
-      Number(sessionStorage.getItem("captureBoxPositionLeft")) - event.clientX
-    ) - 1;
-  const captureBoxHeight =
-    Math.abs(
-      Number(sessionStorage.getItem("captureBoxPositionTop")) - event.clientY
-    ) - 1;
+  const captureBoxLeft = Math.min(captureBoxPositionLeft, event.clientX);
+  const captureBoxTop = Math.min(captureBoxPositionTop, event.clientY);
+  const captureBoxWidth = Math.abs(captureBoxPositionLeft - event.clientX) - 1;
+  const captureBoxHeight = Math.abs(captureBoxPositionTop - event.clientY) - 1;
   captureBox.style.left = captureBoxLeft + "px";
   captureBox.style.top = captureBoxTop + "px";
   captureBox.style.width = captureBoxWidth + "px";
@@ -161,40 +191,23 @@ function grayLayoutMove(event: MouseEvent) {
 }
 
 function grayLayoutUp(event: MouseEvent) {
-  const grayLayout = document.getElementById("__ga_grayLayout__");
-  const captureBox = document.getElementById("__ga_captureBox__");
-  if (!captureBox || !grayLayout) {
+  if (!isScanEvent(event)) {
     return;
   }
+  // A scan takes a single screenshot
+  scanning = false;
 
-  setTimeout(() => {
-    captureBox.style.display = "none";
-    grayLayout.style.display = "none";
-  }, 100);
+  setTimeout(hideGrayLayout, 100);
 
   if (event.button === 1 || event.button === 2) {
     event.preventDefault();
     return;
   }
 
-  const captureBoxLeft =
-    Math.min(
-      Number(sessionStorage.getItem("captureBoxPositionLeft")),
-      event.clientX
-    ) + 1;
-  const captureBoxTop =
-    Math.min(
-      Number(sessionStorage.getItem("captureBoxPositionTop")),
-      event.clientY
-    ) + 1;
-  const captureBoxWidth =
-    Math.abs(
-      Number(sessionStorage.getItem("captureBoxPositionLeft")) - event.clientX
-    ) - 1;
-  const captureBoxHeight =
-    Math.abs(
-      Number(sessionStorage.getItem("captureBoxPositionTop")) - event.clientY
-    ) - 1;
+  const captureBoxLeft = Math.min(captureBoxPositionLeft, event.clientX) + 1;
+  const captureBoxTop = Math.min(captureBoxPositionTop, event.clientY) + 1;
+  const captureBoxWidth = Math.abs(captureBoxPositionLeft - event.clientX) - 1;
+  const captureBoxHeight = Math.abs(captureBoxPositionTop - event.clientY) - 1;
 
   // make sure captureBox and grayLayout is hidden
   setTimeout(() => {
@@ -208,7 +221,6 @@ function grayLayoutUp(event: MouseEvent) {
       },
     });
   }, 200);
-  return false;
 }
 
 async function qrDecode(
@@ -218,9 +230,9 @@ async function qrDecode(
   width: number,
   height: number
 ) {
-  const canvas = document.getElementById(
-    "__ga_qrCanvas__"
-  ) as HTMLCanvasElement;
+  // The screenshot shows more than this page may read, such as frames from
+  // other sites. Keep the canvas out of the DOM so the page cannot get to it.
+  const canvas = document.createElement("canvas");
   const qr = new Image();
   qr.onload = () => {
     const devicePixelRatio = qr.width / window.innerWidth;
@@ -362,17 +374,9 @@ function fireInputEvents(inputBox: HTMLInputElement) {
   return;
 }
 
-window.onkeydown = (event: KeyboardEvent) => {
-  if (event.key === "Escape") {
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key === "Escape" && isScanEvent(event)) {
     event.preventDefault();
-    const grayLayout = document.getElementById("__ga_grayLayout__");
-    const captureBox = document.getElementById("__ga_captureBox__");
-
-    if (grayLayout) {
-      grayLayout.style.display = "none";
-    }
-    if (captureBox) {
-      captureBox.style.display = "none";
-    }
+    hideGrayLayout();
   }
-};
+}

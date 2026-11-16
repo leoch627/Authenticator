@@ -160,3 +160,23 @@ export function okToInjectContentScript(
       tab.url.startsWith("file://"))
   );
 }
+
+// The tab a QR scan was started on, and how far that scan has come. It lives
+// in session storage: content scripts have no access to it, and unlike a
+// variable in the background service worker it is still there after the
+// worker has been put to sleep and woken up again.
+export interface ScanState {
+  tabId: number;
+  state: "armed" | "captured";
+}
+
+// Call this when the user starts a scan, before telling the tab to begin.
+// The tab's content script may then take one screenshot and hand in one
+// result.
+export async function armScan(tab: chrome.tabs.Tab) {
+  if (tab.id === undefined) {
+    return;
+  }
+  const scan: ScanState = { tabId: tab.id, state: "armed" };
+  await chrome.storage.session.set({ scan });
+}

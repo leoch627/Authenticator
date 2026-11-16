@@ -74,7 +74,7 @@
 <script lang="ts">
 import Vue from "vue";
 import { mapState } from "vuex";
-import { getCurrentTab, okToInjectContentScript } from "../../utils";
+import { armScan, getCurrentTab, okToInjectContentScript } from "../../utils";
 
 // Icons
 import IconCog from "../../../svg/cog.svg";
@@ -182,7 +182,7 @@ export default Vue.extend({
           }
         }
 
-        chrome.runtime.sendMessage({ action: "updateContentTab", data: tab });
+        await armScan(tab);
         chrome.tabs.sendMessage(tab.id, { action: "capture" }, (result) => {
           if (result !== "beginCapture") {
             this.$store.commit("notification/alert", this.i18n.capture_failed);

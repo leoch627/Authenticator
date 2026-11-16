@@ -14,7 +14,7 @@
 </template>
 <script lang="ts">
 import Vue from "vue";
-import { getCurrentTab, okToInjectContentScript } from "../../utils";
+import { armScan, getCurrentTab, okToInjectContentScript } from "../../utils";
 export default Vue.extend({
   methods: {
     showInfo(page: string) {
@@ -43,7 +43,7 @@ export default Vue.extend({
           files: ["/css/content.css"],
         });
 
-        chrome.runtime.sendMessage({ action: "updateContentTab", data: tab });
+        await armScan(tab);
         chrome.tabs.sendMessage(tab.id, { action: "capture" }, (result) => {
           if (result !== "beginCapture") {
             this.$store.commit("notification/alert", this.i18n.capture_failed);
