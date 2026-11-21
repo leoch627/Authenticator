@@ -2,8 +2,6 @@
 
 import puppeteer from "puppeteer";
 import path from "path";
-import fs from "fs";
-import { execSync } from "child_process";
 import merge from "lodash/merge";
 
 interface MochaTestResults {
