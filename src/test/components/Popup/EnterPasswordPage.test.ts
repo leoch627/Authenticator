@@ -10,7 +10,7 @@ import CommonComponents from "../../../components/common/index";
 import EnterPasswordPage from "../../../components/Popup/EnterPasswordPage.vue";
 import { loadI18nMessages } from "../../../store/i18n";
 
-const should = chai.should();
+chai.should();
 chai.use(sinonChai);
 mocha.setup("bdd");
 const localVue = createLocalVue();
